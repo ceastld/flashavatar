@@ -71,10 +71,6 @@ class Scene_mica:
             eyelids = torch.as_tensor(flame_params["eyelids"])  # 2
             jaw_pose = torch.as_tensor(flame_params["jaw"])  # 6
             # sum = 120
-            # ic(exp_param.shape)
-            # ic(eyes_pose.shape)
-            # ic(eyelids.shape)
-            # ic(jaw_pose.shape)
 
             oepncv = payload["opencv"]
             w2cR = oepncv["R"][0]

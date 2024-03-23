@@ -5,7 +5,6 @@ __pycache__
 *mp4
 *jpg
 *ply
-*txt
 *sh
 flame/generic_model.pkl
 flame/landmark_embedding.npy

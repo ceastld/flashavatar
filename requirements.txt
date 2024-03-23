@@ -1,0 +1,27 @@
+ninja
+numpy
+matplotlib
+tqdm
+tensorboard
+plyfile
+scipy
+chumpy
+fvcore
+iopath
+git+https://github.com/NVlabs/nvdiffrast
+git+https://github.com/facebookresearch/pytorch3d.git
+
+# gaussian-splatting
+submodules/diff-gaussian-rasterization
+submodules/simple-knn
+
+# flashavatar
+icecream
+kornia
+scikit-image
+opencv-python
+lpips
+natsort
+
+# flame
+loguru
