@@ -173,32 +173,34 @@ class Deform_Model_audio(Deform_Model):
 
     def init_networks(self):
         self.dim_audio_feature = 768
-        ## full mica
-        self.deformNet = MLP(input_dim=self.pts_embedder.dim_embeded + self.dim_audio_feature, output_dim=10, hidden_dim=256, hidden_layers=6)
-        self.audio2exp = MLP(input_dim=self.dim_audio_feature, output_dim=120, hidden_dim=256, hidden_layers=6)
+        # 后面需要改成语音窗口，然后加卷积层
+        self.deformNet = MLP(input_dim=self.pts_embedder.dim_embeded + 120, output_dim=10, hidden_dim=256, hidden_layers=6)
+        self.audio2exp = AudioMLP(input_dim=self.dim_audio_feature, output_dim=100, hidden_dim=256, hidden_layers=6)
+        self.audio2pose = AudioMLP(input_dim=self.dim_audio_feature, output_dim=20, hidden_dim=64, hidden_layers=2)
+
+    def decode_audio(self, audio_feature):
+        # 10 * 768
+        expr_code = self.audio2exp(audio_feature)
+        pose_code = self.audio2pose(audio_feature)
+        eyes_pose = pose_code[:,:12]
+        eyelids = pose_code[:,12:14]
+        jaw_pose = pose_code[:,14:]
+        return expr_code, eyes_pose, eyelids, jaw_pose
 
     def decode(self, codedict):
-
-        shape_code = codedict["shape"].detach() # [1,300]
+        shape_code = codedict["shape"].detach()  # [1,300]
         # expr_code = codedict["expr"].detach()
         # jaw_pose = codedict["jaw_pose"].detach()
         # eyelids = codedict["eyelids"].detach()
         # eyes_pose = codedict["eyes_pose"].detach()
-        
+
         audio_feature: torch.Tensor = codedict["audio_feature"].detach()
+        expr_code, eyes_pose, eyelids, jaw_pose = self.decode_audio(audio_feature.unsqueeze(0))
         batch_size = shape_code.shape[0]
-
-        # condition = torch.cat((expr_code, jaw_pose, eyes_pose, eyelids), dim=1)
-        condition = audio_feature.reshape(1, 1, -1)  # 768
-        exp_param = self.audio2exp(condition).reshape(1, -1)
-        expr_code = exp_param[:,0:100]
-        eyes_pose = exp_param[:,100:112]
-        eyelids = exp_param[:,112:114]
-        jaw_pose = exp_param[:,114:]
-        # 将表情系数条件换成了语音
-
+        
+        condition = torch.cat((expr_code, jaw_pose, eyes_pose, eyelids), dim=1)
         # MLP
-        condition = condition.repeat(1, self.v_num, 1)
+        condition = condition.unsqueeze(1).repeat(1, self.v_num, 1)
         uv_vertices_shape_embeded_condition = torch.cat((self.uv_vertices_shape_embeded, condition), dim=2)
         deforms = self.deformNet(uv_vertices_shape_embeded_condition)
         deforms = torch.tanh(deforms)
@@ -243,13 +245,15 @@ class Deform_Model_audio(Deform_Model):
         return (
             self.deformNet.state_dict(),
             self.audio2exp.state_dict(),
+            self.audio2pose.state_dict(),
             self.optimizer.state_dict(),
         )
 
     def restore(self, model_args):
-        (deformNet_dict, audio2exp_dict, opt_dict) = model_args
+        (deformNet_dict, audio2exp_dict,audio2pose_dict, opt_dict) = model_args
         self.deformNet.load_state_dict(deformNet_dict)
         self.audio2exp.load_state_dict(audio2exp_dict)
+        self.audio2pose.load_state_dict(audio2pose_dict)
         self.training_setup()
         self.optimizer.load_state_dict(opt_dict)
 
@@ -257,6 +261,7 @@ class Deform_Model_audio(Deform_Model):
         params_group = [
             {"params": self.deformNet.parameters(), "lr": 1e-4},
             {"params": self.audio2exp.parameters(), "lr": 1e-4},
+            {"params": self.audio2pose.parameters(), "lr": 1e-4},
         ]
         self.optimizer = torch.optim.Adam(params_group, betas=(0.9, 0.999))
 
@@ -285,6 +290,29 @@ class MLP(nn.Module):
 
         return output
 
+class AudioMLP(nn.Module):
+    def __init__(self, input_dim, output_dim, hidden_dim=256, hidden_layers=6):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.hidden_layers = hidden_layers
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        
+        # self.convNet = nn.Sequential(
+        #     nn.Conv1d(input_dim,256,kernel_size=3,stride=1,)
+        # )
+        
+        self.fcs = nn.ModuleList([nn.Linear(input_dim, hidden_dim)] + [nn.Linear(hidden_dim, hidden_dim) for i in range(hidden_layers - 1)])
+        self.output_linear = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, input):
+        h = input
+        for i, l in enumerate(self.fcs):
+            h = self.fcs[i](h)
+            h = F.relu(h)
+        output = self.output_linear(h)
+        return output
+        
 
 class MLP2(nn.Module):
     def __init__(self, input_dim, condition_dim, output_dim1, output_dim2, hidden_dim=256, hidden_layers=8):

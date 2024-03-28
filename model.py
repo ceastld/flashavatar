@@ -23,6 +23,7 @@ from utils.loss_utils import huber_loss
 from utils.general_utils import normalize_for_percep
 import lpips
 
+
 def img2numpy(image: torch.Tensor) -> np.ndarray:
     return (image * 255.0).permute(1, 2, 0).detach().cpu().numpy().astype(np.uint8)
 
@@ -34,6 +35,7 @@ def get_save_img(img1: torch.Tensor, img2: torch.Tensor, img_res):
     save_img[:, :img_res, :] = img1_np
     save_img[:, img_res:, :] = img2_np
     return save_img
+
 
 class MainModel:
     def __init__(
@@ -64,7 +66,6 @@ class MainModel:
             idname=idname,
             logname=logname,
             white_background=self.lpt.white_background,
-            device=self.device,
         )
 
         self.init_model()
@@ -72,6 +73,7 @@ class MainModel:
         if not self.start_checkpoint and is_infer:
             self.start_checkpoint = os.path.join(self.log_dir, "ckpt", "chkpnt150000.pth")
 
+        self.first_iter = 0
         # restore
         if self.start_checkpoint:
             (model_params, gauss_params, first_iter) = torch.load(self.start_checkpoint)
@@ -122,10 +124,11 @@ class MainModel:
     def train(self):
         percep_module = lpips.LPIPS(net="vgg").to(self.device)
         writer = SummaryWriter(self.log_dir)
-        first_iter = self.first_iter if self.first_iter else 0
+        first_iter = self.first_iter
         viewpoint_stack = None
         first_iter += 1
-        mid_num = 15000
+
+        mid_num = 30000
 
         codedict = self.codedict
         gaussians = self.gaussians
@@ -151,6 +154,10 @@ class MainModel:
             codedict["eyelids"] = viewpoint_cam.eyelids
             codedict["jaw_pose"] = viewpoint_cam.jaw_pose
             codedict["audio_feature"] = viewpoint_cam.audio_feature
+
+            # expr_code, eyes_pose, eyelids, jaw_pose = DeformModel.decode_audio(viewpoint_cam.audio_feature)
+            # 不要回归表情系数
+
             verts_final, rot_delta, scale_coef = DeformModel.decode(codedict)
 
             if iteration == 1:
@@ -200,7 +207,7 @@ class MainModel:
                 # visualize results
                 if iteration % 500 == 0 or iteration == 1:
                     save_img = get_save_img(gt_image, image.clamp(0, 1), self.image_res)
-                    cv2.imwrite(os.path.join(dir, f"{iteration}.jpg"), save_img[:, :, [2, 1, 0]])
+                    cv2.imwrite(os.path.join(self.log_dir, "train", f"{iteration}.jpg"), save_img[:, :, [2, 1, 0]])
 
                 # save checkpoint
                 if iteration % 5000 == 0:
@@ -210,7 +217,7 @@ class MainModel:
                         os.path.join(self.model_dir, f"chkpnt{iteration}.pth"),
                     )
 
-    def infer_video(self, video_path):
+    def infer_video(self, video_path, max_frames=100000, cam_id=0):
         video: VideoFileClip = VideoFileClip(video_path).set_fps(25)
         audio_path = extract_audio_from_video(video_path)
         audio_feature_list = extract_audio_feature(audio_path)
@@ -218,14 +225,16 @@ class MainModel:
         res = self.image_res
         duration = video.duration
         fps = video.fps
-        total_frames = int(duration * fps)
+        total_frames = min(int(duration * fps), max_frames)
 
         writer = FFmpegPipeWrapper(test_path, [res * 2, res], 25)  # 1024 * 512
         for i, frame in tqdm(enumerate(video.iter_frames()), total=total_frames, desc="render video"):
             if 2 * i + 1 >= audio_feature_list.shape[0]:
                 break
+            if i >= max_frames:
+                break
             audio_feature = (audio_feature_list[2 * i] + audio_feature_list[2 * i + 1]) / 2
-            image = self.render(self.viewpoint[0], audio_feature)
+            image = self.render(self.viewpoint[cam_id], audio_feature)
             image_np = img2numpy(image)
             save_img = np.zeros((res, res * 2, 3), dtype=np.uint8)
             save_img[:, :res, :] = frame
