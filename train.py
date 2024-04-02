@@ -1,6 +1,12 @@
 from model import MainModel
+import os
 
-if __name__ == "__main__":
-    model = MainModel(use_args=True)
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
-    model.train()
+model = MainModel(
+    idname="obama79",
+    logname="log4",
+    max_train_num=1000,
+)
+
+model.train()

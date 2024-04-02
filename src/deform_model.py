@@ -175,16 +175,46 @@ class Deform_Model_audio(Deform_Model):
         self.dim_audio_feature = 768
         # 后面需要改成语音窗口，然后加卷积层
         self.deformNet = MLP(input_dim=self.pts_embedder.dim_embeded + 120, output_dim=10, hidden_dim=256, hidden_layers=6)
-        self.audio2exp = AudioMLP(input_dim=self.dim_audio_feature, output_dim=100, hidden_dim=256, hidden_layers=6)
-        self.audio2pose = AudioMLP(input_dim=self.dim_audio_feature, output_dim=20, hidden_dim=64, hidden_layers=2)
+        self.audio2exp = nn.Sequential(
+            nn.Conv2d(768, 512, kernel_size=(3, 1), stride=(2, 1), padding=(1, 0), bias=True),  #  768 x 16 x 1 => 512 x 8 x 1
+            nn.LeakyReLU(0.02, True),
+            nn.Conv2d(512, 256, kernel_size=(3, 1), stride=(2, 1), padding=(1, 0), bias=True),  # 512 x 8 x 1 => 256 x 4 x 1
+            nn.LeakyReLU(0.02, True),
+            nn.Conv2d(256, 256, kernel_size=(3, 1), stride=(2, 1), padding=(1, 0), bias=True),  # 256 x 4 x 1 => 256 x 2 x 1
+            nn.LeakyReLU(0.2, True),
+            nn.Conv2d(256, 128, kernel_size=(3, 1), stride=(2, 1), padding=(1, 0), bias=True),  # 256 x 2 x 1 => 120 x 1 x 1
+            nn.LeakyReLU(0.2, True),
+        )
+        
+        self.expfullNet=nn.Sequential(
+            nn.Linear(in_features = 128, out_features=256, bias = True),
+            nn.LeakyReLU(0.02),
+            nn.Linear(in_features = 256, out_features=128, bias = True),
+            nn.LeakyReLU(0.02),            
+            nn.Linear(in_features = 128, out_features=120, bias = True),          
+            nn.Tanh()
+        )
+        # self.audio2pose = AudioMLP(input_dim=self.dim_audio_feature, output_dim=20, hidden_dim=64, hidden_layers=2)
 
-    def decode_audio(self, audio_feature):
-        # 10 * 768
-        expr_code = self.audio2exp(audio_feature)
-        pose_code = self.audio2pose(audio_feature)
-        eyes_pose = pose_code[:,:12]
-        eyelids = pose_code[:,12:14]
-        jaw_pose = pose_code[:,14:]
+    def decode_audio(self, audio_feature:torch.Tensor):
+        """_summary_
+
+        Args:
+            audio_feature (Tensor): 16*768
+
+        Returns:
+            _type_: _description_
+        """
+        exparam: torch.Tensor = self.audio2exp(audio_feature.permute(1,0).unsqueeze(2))
+        exparam = exparam.squeeze(2).permute(1,0) # 1 * 256
+        exparam = self.expfullNet(exparam)
+        
+        expr_code = exparam[:, :100]
+        # pose_code = self.audio2pose(audio_feature)
+        eyes_pose = exparam[:, 100:112]
+        eyelids = exparam[:, 112:114]
+        jaw_pose = exparam[:, 114:]
+        
         return expr_code, eyes_pose, eyelids, jaw_pose
 
     def decode(self, codedict):
@@ -195,9 +225,9 @@ class Deform_Model_audio(Deform_Model):
         # eyes_pose = codedict["eyes_pose"].detach()
 
         audio_feature: torch.Tensor = codedict["audio_feature"].detach()
-        expr_code, eyes_pose, eyelids, jaw_pose = self.decode_audio(audio_feature.unsqueeze(0))
+        expr_code, eyes_pose, eyelids, jaw_pose = self.decode_audio(audio_feature)
         batch_size = shape_code.shape[0]
-        
+
         condition = torch.cat((expr_code, jaw_pose, eyes_pose, eyelids), dim=1)
         # MLP
         condition = condition.unsqueeze(1).repeat(1, self.v_num, 1)
@@ -243,17 +273,13 @@ class Deform_Model_audio(Deform_Model):
 
     def capture(self):
         return (
-            self.deformNet.state_dict(),
-            self.audio2exp.state_dict(),
-            self.audio2pose.state_dict(),
+            self.state_dict(),
             self.optimizer.state_dict(),
         )
 
     def restore(self, model_args):
-        (deformNet_dict, audio2exp_dict,audio2pose_dict, opt_dict) = model_args
-        self.deformNet.load_state_dict(deformNet_dict)
-        self.audio2exp.load_state_dict(audio2exp_dict)
-        self.audio2pose.load_state_dict(audio2pose_dict)
+        (param_dict , opt_dict) = model_args
+        self.load_state_dict(param_dict)
         self.training_setup()
         self.optimizer.load_state_dict(opt_dict)
 
@@ -261,7 +287,7 @@ class Deform_Model_audio(Deform_Model):
         params_group = [
             {"params": self.deformNet.parameters(), "lr": 1e-4},
             {"params": self.audio2exp.parameters(), "lr": 1e-4},
-            {"params": self.audio2pose.parameters(), "lr": 1e-4},
+            # {"params": self.audio2pose.parameters(), "lr": 1e-4},
         ]
         self.optimizer = torch.optim.Adam(params_group, betas=(0.9, 0.999))
 
@@ -290,6 +316,7 @@ class MLP(nn.Module):
 
         return output
 
+
 class AudioMLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim=256, hidden_layers=6):
         super().__init__()
@@ -297,11 +324,11 @@ class AudioMLP(nn.Module):
         self.hidden_layers = hidden_layers
         self.input_dim = input_dim
         self.output_dim = output_dim
-        
+
         # self.convNet = nn.Sequential(
         #     nn.Conv1d(input_dim,256,kernel_size=3,stride=1,)
         # )
-        
+
         self.fcs = nn.ModuleList([nn.Linear(input_dim, hidden_dim)] + [nn.Linear(hidden_dim, hidden_dim) for i in range(hidden_layers - 1)])
         self.output_linear = nn.Linear(hidden_dim, output_dim)
 
@@ -312,7 +339,7 @@ class AudioMLP(nn.Module):
             h = F.relu(h)
         output = self.output_linear(h)
         return output
-        
+
 
 class MLP2(nn.Module):
     def __init__(self, input_dim, condition_dim, output_dim1, output_dim2, hidden_dim=256, hidden_layers=8):

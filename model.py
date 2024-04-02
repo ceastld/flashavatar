@@ -9,7 +9,7 @@ from icecream import ic
 import datetime
 
 from scene.cameras import Camera
-from scene import GaussianModel, Scene_mica
+from scene import GaussianModel, Scene_mica, load_audio_feature
 from src.deform_model import Deform_Model_audio
 from gaussian_renderer import render
 from arguments import ModelParams, PipelineParams, OptimizationParams
@@ -47,6 +47,8 @@ class MainModel:
         logname: str = "log",
         is_infer: bool = False,
         use_args: bool = False,
+        max_train_num: int = 10000,
+        iterations: int = 150000,
     ) -> None:
         # args
         self.seed = seed
@@ -54,6 +56,7 @@ class MainModel:
         self.image_res = image_res
         self.start_checkpoint = start_checkpoint
         self.logname = logname
+        self.iterations = iterations
 
         self.is_infer = is_infer
         self.parse_args(use_args)
@@ -66,6 +69,7 @@ class MainModel:
             idname=idname,
             logname=logname,
             white_background=self.lpt.white_background,
+            max_train_num=max_train_num,
         )
 
         self.init_model()
@@ -89,7 +93,7 @@ class MainModel:
         self.codedict["shape"] = self.scene.shape_param.to(self.device)
         self.DeformModel.example_init(self.codedict)
 
-    def load_data(self, idname, logname, white_background):
+    def load_data(self, idname, logname, white_background, max_train_num):
         self.data_dir = os.path.join("dataset", idname)
         self.mica_datadir = os.path.join("metrical-tracker/output", idname)
         self.log_dir = os.path.join(self.data_dir, logname)
@@ -102,13 +106,7 @@ class MainModel:
         self.doc_dir = os.path.join(self.log_dir, "doc")
         os.makedirs(self.doc_dir, exist_ok=True)
 
-        self.scene = Scene_mica(
-            self.data_dir,
-            self.mica_datadir,
-            train_type=0,
-            white_background=white_background,
-            device=device,
-        )
+        self.scene = Scene_mica(self.data_dir, self.mica_datadir, train_type=0, white_background=white_background, device=device, max_train_num=max_train_num)
 
     def init_model(self):
         DeformModel = Deform_Model_audio(self.device).to(self.device)
@@ -134,7 +132,7 @@ class MainModel:
         gaussians = self.gaussians
         DeformModel = self.DeformModel
 
-        for iteration in range(first_iter, self.opt.iterations + 1):
+        for iteration in range(first_iter, self.iterations + 1):
             # Every 500 its we increase the levels of SH up to a maximum degree
             if iteration % 500 == 0:
                 gaussians.oneupSHdegree()
@@ -188,7 +186,7 @@ class MainModel:
 
             with torch.no_grad():
                 # Optimizer step
-                if iteration < self.opt.iterations:
+                if iteration < self.iterations:
                     gaussians.optimizer.step()
                     DeformModel.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none=True)
@@ -220,7 +218,8 @@ class MainModel:
     def infer_video(self, video_path, max_frames=100000, cam_id=0):
         video: VideoFileClip = VideoFileClip(video_path).set_fps(25)
         audio_path = extract_audio_from_video(video_path)
-        audio_feature_list = extract_audio_feature(audio_path)
+        audio_feature_path = extract_audio_feature(audio_path)
+        audio_feature_list = load_audio_feature(audio_feature_path, self.device)
         test_path = str(Path(video_path).with_stem("test"))
         res = self.image_res
         duration = video.duration
@@ -233,7 +232,7 @@ class MainModel:
                 break
             if i >= max_frames:
                 break
-            audio_feature = (audio_feature_list[2 * i] + audio_feature_list[2 * i + 1]) / 2
+            audio_feature = audio_feature_list[2 * i : 2 * i + 16, :]
             image = self.render(self.viewpoint[cam_id], audio_feature)
             image_np = img2numpy(image)
             save_img = np.zeros((res, res * 2, 3), dtype=np.uint8)
