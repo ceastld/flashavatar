@@ -234,7 +234,7 @@ class MainModel:
                 break
             audio_feature = audio_feature_list[2 * i : 2 * i + 16, :]
             image = self.render(self.viewpoint[cam_id], audio_feature)
-            image_np = img2numpy(image)
+            image_np = img2numpy(image.clamp(0,1))
             save_img = np.zeros((res, res * 2, 3), dtype=np.uint8)
             save_img[:, :res, :] = frame
             save_img[:, res:, :] = image_np
